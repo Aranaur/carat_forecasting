@@ -1,0 +1,328 @@
+---
+title: "Prophet"
+subtitle: "Carat"
+author: "Ігор Мірошниченко"
+date: today
+date-format: iso
+# institute: КНЕУ::ІІТЕ
+crossref:
+  fig-title: Рис.     # (default is "Figure")
+  tbl-title: Таб.     # (default is "Table")
+format:
+  revealjs: 
+    df-print: kable
+    theme: [simple, custom.scss]
+    # footer: <https://t.me/araprof>
+    logo: img/logo.png
+    chalkboard: true
+    slide-number: true
+    toc: true
+    toc-title: ЗМІСТ
+    transition: fade
+    mouse-wheel: true
+    highlight-style: github
+    mainfont: metropolis
+    toc-depth: 1
+    fig-width: 9
+    fig-height: 5
+knitr: 
+  opts_chunk: 
+    echo: true
+    warnings: false
+    message: false
+    # cache: true
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(pacman)
+p_load(
+  broom, tidyverse,
+  ggplot2, ggthemes, ggforce, ggridges, cowplot, scales,
+  latex2exp, viridis, extrafont, gridExtra, plotly, ggformula,
+  kableExtra, DT,
+  data.table, dplyr, snakecase, janitor,
+  lubridate, knitr, future, furrr,
+  MASS, estimatr, FNN, caret, parsnip,
+  huxtable, here, magrittr, parallel, tidymodels, glmnet, fontawesome
+)
+
+
+# Define colors
+red_pink   = "#e64173"
+turquoise  = "#20B2AA"
+orange     = "#FFA500"
+red        = "#fb6107"
+blue       = "#3b3b9a"
+green      = "#8bb174"
+grey_light = "grey70"
+grey_mid   = "grey50"
+grey_dark  = "grey20"
+purple     = "#6A5ACD"
+slate      = "#314f4f"
+```
+
+# `prophet`
+
+## Початок
+
+У 2017 р. фахівці компанії Facebook оголосили про розроблений ними новий пакет для прогнозування часових рядів – `prophet` (“пророк”). 
+
+```{r}
+#| eval: false
+install.packages("prophet")
+```
+
+Якщо ви працюєте на комп'ютері Mac, не забудьте додати аргумент `type = "source"`:
+
+```{r}
+#| eval: false
+install.packages("prophet", type = "source")
+```
+
+## Методологія
+
+Детальний опис реалізованої в `prophet` методології можна знайти у статті [Taylor and Letham (2017)](https://peerj.com/preprints/3190.pdf).
+
+Коротко, в основі цієї методології лежить процедура підгонки адитивних регресійних моделей (Generalized Additive Models, GAM) наступного виду:
+
+$$y(t) = g(t) + s(t) + h(t) + \epsilon_t$$
+$g(t)$ та $s(t)$ - функції, що апроксимують тренд ряду та сезонні коливання (наприклад, річні, тижневі тощо).
+
+$h(t)$ - функція, що відображає ефекти свят та інших впливових подій
+
+$\epsilon_t$ - нормально розподілені випадкові збурення.
+
+---
+
+## Методологія {.smaller}
+
+Для апроксимації перерахованих функцій використовуються такі методи:
+
+- *тренд*: кусково лінійна регресія або кусково логістична крива;
+- *річна сезонність*: часткові суми низки Фур'є, кількість членів якого (порядок) визначає гладкість функції;
+- *тижнева сезонність*: представлена у вигляді індикаторної змінної;
+- *"свята"* (наприклад, офіційні святкові та вихідні дні - Новий рік, Різдво тощо, а також інші дні, під час яких властивості тимчасового ряду можуть істотно змінитись - спортивні чи культурні події, природні явища тощо): представлені у вигляді індикаторних змінних.
+
+Оцінювання параметрів моделі, що підганяється, виконується з використанням принципів байєсівської статистики (або методом знаходження апостеріорного максимуму (MAP), або шляхом повного байєсовського висновку).
+
+Для цього використовується платформа ймовірнісного програмування `Stan`.
+
+---
+
+## Приклад
+
+```{r}
+library(prophet)
+library(tidyverse)
+library(fpp3)
+
+head(aus_production)
+```
+
+---
+
+## Приклад M0
+```{r}
+production <- aus_production %>% 
+  rename(ds = Quarter,
+         y = Beer)
+
+production %>% 
+  ggplot(aes(ds, y)) +
+  geom_line() +
+  theme_minimal()
+```
+
+---
+
+## Приклад M0
+```{r}
+M0 <- prophet::prophet(production)
+
+future_df <- make_future_dataframe(M0, periods = 24, freq = "quarter")
+forecast_M0 <- predict(M0, future_df)
+
+forecast_M0 %>% 
+  dplyr::select(yhat, yhat_lower, yhat_upper) %>% 
+  head()
+```
+
+---
+
+## Приклад M0
+
+```{r}
+plot(M0, forecast_M0)
+```
+
+---
+
+## Приклад M0
+```{r}
+prophet_plot_components(M0, forecast_M0)
+```
+
+## Функція `prophet()` {.smaller}
+
+- `df`: датафрейм зі змінними `ds` та `y`
+- `growth`: тип тренду (linear, logistic)
+- `changepoints`: текстовий вектор з датами (у форматі YYYY-MM-DD), що відповідають “переломним моментам”, або “точкам зламу” `y`
+- `n.changepoints` - передбачувана кількість "переломних моментів"
+- `changepoint.range` — доля исторических данных (начиная с самого первого наблюдения), по которым будут оценены точки излома.
+- `yearly.seasonality` — параметр настройки годовой сезонности (`"auto"`, `TRUE`, `FALSE` або кількість членів ряду Фур'є).
+- `weekly.seasonality` — параметр налаштування тижневої сезонності
+- `production.seasonality` — параметр налаштування денної сезонності
+- `holidays` - таблиця, що містить два обов'язкові стовпці: `holiday` (текстова змінна з назвами "свят" та інших важливих подій, що потенційно впливають на властивості часового ряду) і `ds` (дати).
+- `seasonality.mode` — режим моделирования сезонных компонент.
+- ...
+
+# Точки зламу тренду
+
+## Точки зламу тренду
+```{r}
+plot(M0, forecast_M0) + add_changepoints_to_plot(M0)
+```
+
+## Приклад M1
+```{r}
+M1 <- prophet(production,
+              yearly.seasonality = TRUE,
+              daily.seasonality = TRUE,
+              weekly.seasonality=TRUE)
+
+forecast_M1 <- predict(M1, future_df)
+plot(M1, forecast_M1) + add_changepoints_to_plot(M1)
+```
+
+## Приклад M2
+```{r}
+M2 <- prophet(production,
+              yearly.seasonality = TRUE,
+              daily.seasonality = TRUE,
+              weekly.seasonality=TRUE,
+              n.changepoints = 15, 
+              changepoint.range = 0.95)
+
+forecast_M2 <- predict(M2, future_df)
+plot(M2, forecast_M2) + add_changepoints_to_plot(M2)
+```
+
+## Приклад M3
+```{r}
+M3 <- prophet(production, 
+              yearly.seasonality = TRUE,
+              daily.seasonality = TRUE,
+              weekly.seasonality=TRUE,
+              changepoint.range = 0.95, 
+              changepoint.prior.scale = 0.01)
+
+M3$changepoints
+
+forecast_M3 <- predict(M3, future_df)
+plot(M3, forecast_M3) + add_changepoints_to_plot(M3)
+```
+
+<!-- ## Приклад M4 -->
+<!-- ```{r} -->
+<!-- M4 <- prophet(production,  -->
+<!--               yearly.seasonality = TRUE, -->
+<!--               changepoints = c("1980-04-01", -->
+<!--                                "2000-04-01")) -->
+
+<!-- forecast_M4 <- predict(M4, future_df) -->
+<!-- plot(M4, forecast_M4) + add_changepoints_to_plot(M4) -->
+<!-- ``` -->
+
+# Ефекти свят
+
+## Ефекти свят
+
+```{r}
+key_dates <- dplyr::tibble(
+  holiday = paste0("event_", 1:3),
+  ds = as.Date(c("1979-04-01",
+                 "1980-04-01",
+                 "2000-04-01"))
+  )
+
+M5 <- prophet(production, 
+              yearly.seasonality = TRUE,
+              holidays = key_dates,
+              changepoint.range = 0.9)
+
+forecast_M5 <- predict(M5, future_df)
+plot(M5, forecast_M5)
+```
+
+## Вбудовані дати свят
+```{r}
+M6 <- prophet(yearly.seasonality = TRUE,
+              changepoint.range = 0.9)
+
+M6 <- add_country_holidays(m = M6, country_name = 'US')
+
+M6 <- fit.prophet(M6, production)
+forecast_M6 <- predict(M6, future_df)
+
+plot(M6, forecast_M6)
+
+plot_forecast_component(M6, forecast_M6, name = "holidays")
+```
+
+## Вбудовані дати свят
+```{r}
+M6$train.holiday.names
+
+plot(M6, forecast_M6)
+```
+
+# `fable.prophet`
+
+## `fable.prophet`
+```{r}
+library(fable.prophet)
+train <- production %>%
+  filter(year(ds) < 2008)
+fit <- train %>%
+  model(
+    arima = ARIMA(y),
+    ets = ETS(y),
+    prophet = fable.prophet::prophet(y ~ season(period = 4, order = 2, type = "multiplicative") +
+                                       growth(type = "linear", changepoint_range=0.9))
+  )
+```
+
+## `fable.prophet`
+```{r}
+fc <- fit %>% forecast(h = 4*5)
+fc %>% autoplot(production, level = NULL)
+```
+
+## `fable.prophet`
+```{r}
+fc %>% accuracy(production)
+```
+
+
+# Дякую за увагу! {.unnumbered .unlisted}
+
+<br>
+<br>
+
+`r fa("telegram")` [Data Mirosh](https://t.me/araprof)
+
+`r fa("github")` [\@aranaur](https://github.com/Aranaur)
+
+`r fa("envelope")` ihor.miroshnychenko\@kneu.ua
+
+`r fa("linkedin")` [\@ihormiroshnychenko](https://www.linkedin.com/in/ihormiroshnychenko/)
+
+`r fa("house")` [aranaur.rbind.io](https://aranaur.rbind.io)
+
+
+
